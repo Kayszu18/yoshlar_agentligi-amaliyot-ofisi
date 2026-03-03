@@ -1,12 +1,15 @@
-import os
+﻿import os
 import shutil
 import re
+import aiohttp
+import json
+import logging
 from datetime import datetime, date
 from typing import Optional
 import sys
 from aiogram import Bot
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from config import UPLOAD_DIR, MAX_FILE_SIZE
+from config import UPLOAD_DIR, MAX_FILE_SIZE, GOOGLE_SHEETS_WEBHOOK_URL
 
 
 class FileService:
@@ -146,6 +149,31 @@ class ExportService:
         for col in ws.columns:
             max_length = max(len(str(cell.value or "")) for cell in col)
             ws.column_dimensions[col[0].column_letter].width = min(max_length + 2, 40)
+
+        # Export v2: quick analytics sheet
+        stats_ws = wb.create_sheet("Statistika")
+        stats_ws["A1"] = "Status"
+        stats_ws["B1"] = "Soni"
+        stats_ws["D1"] = "Viloyat"
+        stats_ws["E1"] = "Soni"
+
+        status_counts = {}
+        region_counts = {}
+        for app, user, score, interview in applications:
+            status_counts[app.final_status or "unknown"] = status_counts.get(app.final_status or "unknown", 0) + 1
+            region_counts[app.region or "unknown"] = region_counts.get(app.region or "unknown", 0) + 1
+
+        row = 2
+        for status, cnt in sorted(status_counts.items(), key=lambda x: x[0]):
+            stats_ws.cell(row=row, column=1, value=status)
+            stats_ws.cell(row=row, column=2, value=cnt)
+            row += 1
+
+        row = 2
+        for region, cnt in sorted(region_counts.items(), key=lambda x: x[0]):
+            stats_ws.cell(row=row, column=4, value=region)
+            stats_ws.cell(row=row, column=5, value=cnt)
+            row += 1
 
         export_path = os.path.join(UPLOAD_DIR, "exports")
         os.makedirs(export_path, exist_ok=True)
@@ -437,3 +465,222 @@ class ExportService:
         except Exception as e:
             logging.error(f"Zip export error: {e}")
             return None
+
+
+class GoogleSheetsService:
+    """Send data to Google Sheets via Apps Script/Webhook endpoint."""
+
+    @staticmethod
+    async def sync_applications(applications: list, actor: str) -> tuple[bool, str]:
+        if not GOOGLE_SHEETS_WEBHOOK_URL:
+            return False, "GOOGLE_SHEETS_WEBHOOK_URL sozlanmagan."
+
+        payload_rows = []
+        for app, user, score, interview in applications:
+            payload_rows.append(
+                {
+                    "application_id": app.id,
+                    "full_name": user.full_name if user else "",
+                    "phone_number": user.phone_number if user else "",
+                    "region": app.region or "",
+                    "district": app.district or "",
+                    "final_status": app.final_status or "",
+                    "stage1_score": (
+                        (score.experience_score or 0) +
+                        (score.results_score or 0) +
+                        (score.motivation_score or 0)
+                    ) if score else 0,
+                    "essay_score": score.essay_score if score else None,
+                    "total_score": score.total_score if score else None,
+                    "interview_date": interview.interview_date if interview else "",
+                    "interview_time": interview.interview_time if interview else "",
+                    "interview_status": interview.status if interview else "",
+                    "submitted_at": app.submitted_at.isoformat() if app.submitted_at else "",
+                    "updated_at": app.updated_at.isoformat() if app.updated_at else "",
+                }
+            )
+
+        payload = {
+            "meta": {
+                "source": "amaliyot_ofisi_bot",
+                "actor": actor,
+                "synced_at": datetime.utcnow().isoformat(),
+                "rows_count": len(payload_rows),
+            },
+            "rows": payload_rows,
+        }
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(GOOGLE_SHEETS_WEBHOOK_URL, json=payload) as response:
+                    if 200 <= response.status < 300:
+                        return True, f"{len(payload_rows)} ta yozuv yuborildi."
+                    text = await response.text()
+                    return False, f"HTTP {response.status}: {text[:200]}"
+        except Exception as e:
+            return False, str(e)
+
+
+class UIService:
+    @staticmethod
+    def progress(step: int, total: int, title: str) -> str:
+        bar_len = 8
+        filled = int((step / total) * bar_len)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        return f"📍 <b>{title}</b>\n[{bar}] {step}/{total}"
+
+
+class DraftService:
+    @staticmethod
+    async def save_draft(session, telegram_id: int, state_name: str, state_data: dict):
+        from sqlalchemy import select
+        from database import UserDraft
+
+        raw = json.dumps(state_data or {}, ensure_ascii=False)
+        result = await session.execute(select(UserDraft).where(UserDraft.telegram_id == telegram_id))
+        draft = result.scalar_one_or_none()
+        if draft:
+            draft.state_name = state_name
+            draft.state_data = raw
+            draft.updated_at = datetime.utcnow()
+        else:
+            session.add(
+                UserDraft(
+                    telegram_id=telegram_id,
+                    state_name=state_name,
+                    state_data=raw,
+                )
+            )
+        await session.commit()
+
+    @staticmethod
+    async def get_draft(session, telegram_id: int):
+        from sqlalchemy import select
+        from database import UserDraft
+
+        result = await session.execute(select(UserDraft).where(UserDraft.telegram_id == telegram_id))
+        draft = result.scalar_one_or_none()
+        if not draft:
+            return None
+        try:
+            data = json.loads(draft.state_data or "{}")
+        except Exception:
+            data = {}
+        return {
+            "state_name": draft.state_name,
+            "state_data": data,
+            "updated_at": draft.updated_at,
+        }
+
+    @staticmethod
+    async def clear_draft(session, telegram_id: int):
+        from sqlalchemy import select
+        from database import UserDraft
+
+        result = await session.execute(select(UserDraft).where(UserDraft.telegram_id == telegram_id))
+        draft = result.scalar_one_or_none()
+        if draft:
+            await session.delete(draft)
+            await session.commit()
+
+
+class ReminderService:
+    @staticmethod
+    async def run(session_factory, bot: Bot):
+        from sqlalchemy import select
+        from database import Application, User, Interview, ReminderLog
+
+        async with session_factory() as session:
+            now = datetime.utcnow()
+
+            # Essay reminder: stage1 passed and no essay after 24 hours
+            essay_q = await session.execute(
+                select(Application, User)
+                .join(User, Application.user_id == User.id)
+                .where(Application.final_status == "stage1_passed")
+            )
+            for app, user in essay_q.all():
+                if not app.updated_at or (now - app.updated_at).total_seconds() < 24 * 3600:
+                    continue
+                key = f"essay:{app.id}"
+                fail_key = f"{key}:chat_not_found"
+                exists = await session.execute(
+                    select(ReminderLog).where(ReminderLog.reminder_key.in_([key, fail_key]))
+                )
+                if exists.scalar_one_or_none():
+                    continue
+                try:
+                    await bot.send_message(
+                        user.telegram_id,
+                        "⏰ Eslatma: Siz 1-bosqichdan o'tgansiz. Iltimos, esseni tezroq yuboring.",
+                    )
+                    session.add(ReminderLog(reminder_key=key, telegram_id=user.telegram_id, reminder_type="essay"))
+                except Exception as e:
+                    logging.warning(f"Essay reminder failed for {user.telegram_id}: {e}")
+                    if "chat not found" in str(e).lower():
+                        fail_exists = await session.execute(
+                            select(ReminderLog).where(ReminderLog.reminder_key == fail_key)
+                        )
+                        if not fail_exists.scalar_one_or_none():
+                            session.add(
+                                ReminderLog(
+                                    reminder_key=fail_key,
+                                    telegram_id=user.telegram_id,
+                                    reminder_type="essay_failed_chat_not_found",
+                                )
+                            )
+
+            # Interview reminder: upcoming within 24h
+            int_q = await session.execute(
+                select(Interview, Application, User)
+                .join(Application, Interview.application_id == Application.id)
+                .join(User, Application.user_id == User.id)
+                .where(Application.final_status == "interview_scheduled")
+            )
+            for interview, app, user in int_q.all():
+                try:
+                    dt = datetime.strptime(
+                        f"{interview.interview_date} {interview.interview_time}",
+                        "%d.%m.%Y %H:%M",
+                    )
+                except Exception:
+                    continue
+
+                delta = (dt - now).total_seconds()
+                if delta < 0 or delta > 24 * 3600:
+                    continue
+
+                key = f"interview:{interview.id}:{interview.interview_date}:{interview.interview_time}"
+                fail_key = f"{key}:chat_not_found"
+                exists = await session.execute(
+                    select(ReminderLog).where(ReminderLog.reminder_key.in_([key, fail_key]))
+                )
+                if exists.scalar_one_or_none():
+                    continue
+                try:
+                    await bot.send_message(
+                        user.telegram_id,
+                        (
+                            "⏰ Eslatma: suhbat vaqtingiz yaqinlashdi.\n"
+                            f"📅 {interview.interview_date} {interview.interview_time}\n"
+                            f"📍 {interview.location}"
+                        ),
+                    )
+                    session.add(ReminderLog(reminder_key=key, telegram_id=user.telegram_id, reminder_type="interview"))
+                except Exception as e:
+                    logging.warning(f"Interview reminder failed for {user.telegram_id}: {e}")
+                    if "chat not found" in str(e).lower():
+                        fail_exists = await session.execute(
+                            select(ReminderLog).where(ReminderLog.reminder_key == fail_key)
+                        )
+                        if not fail_exists.scalar_one_or_none():
+                            session.add(
+                                ReminderLog(
+                                    reminder_key=fail_key,
+                                    telegram_id=user.telegram_id,
+                                    reminder_type="interview_failed_chat_not_found",
+                                )
+                            )
+
+            await session.commit()

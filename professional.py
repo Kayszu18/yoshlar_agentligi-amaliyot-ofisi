@@ -1,4 +1,4 @@
-from aiogram import Router, F
+﻿from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,15 +8,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from states import ProfessionalStates
 from keyboards import (
     yes_no_keyboard, lang_cert_keyboard, mega_projects_keyboard,
-    initiative_keyboard, skip_keyboard, cancel_keyboard, back_keyboard
+    initiative_keyboard, skip_keyboard, cancel_keyboard, back_keyboard, main_menu_keyboard
 )
-from services import ValidationService, FileService
+from services import ValidationService, FileService, UIService
 from config import UPLOAD_DIR
 
 router = Router()
 
 
 async def start_professional(message: Message, state: FSMContext):
+    await message.answer(UIService.progress(2, 4, "Professional ma'lumotlar"), parse_mode="HTML")
     await state.set_state(ProfessionalStates.obyektivka)
     await message.answer(
         "💼 <b>Navbat professional ma'lumotlarga!</b>\n\n"
@@ -546,6 +547,10 @@ async def process_mega_projects(callback: CallbackQuery, state: FSMContext):
     if project == "done":
         if not selected:
             await state.update_data(mega_projects="Yo'q")
+            # Unset editing flag if it exists
+            if data.get("is_editing"):
+                await state.update_data(is_editing=False)
+
             await callback.message.edit_text("✅ Tanlangan: Yo'q")
             from finish import show_confirmation
             await show_confirmation(callback.message, state)
@@ -581,5 +586,10 @@ async def process_mega_projects_count(message: Message, state: FSMContext):
     final_str = f"{', '.join(selected)} (Jalb qilinganlar: {count})"
     await state.update_data(mega_projects=final_str)
     
+    # Unset editing flag if it exists
+    if data.get("is_editing"):
+        await state.update_data(is_editing=False)
+
     from finish import show_confirmation
     await show_confirmation(message, state)
+

@@ -27,8 +27,8 @@ bot/
 │   ├── admin.py               # Admin panel
 │   └── application/
 │       ├── personal.py        # 1-bosqich: Shaxsiy
-│       ├── professional.py    # 2-bosqich: Professional
-│       ├── essay.py           # 3-bosqich: Esse
+│       ├── professional.py    # 1-bosqich: Professional
+│       ├── essay.py           # 2-bosqich: Esse
 │       └── finish.py          # Tasdiqlash va saqlash
 │
 ├── keyboards/

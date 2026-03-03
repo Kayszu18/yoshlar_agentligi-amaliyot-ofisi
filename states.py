@@ -52,6 +52,7 @@ class AdminStates(StatesGroup):
     
     # Filter/Search states
     search_candidate = State()
+    last_search_query = State() # To store search query for pagination
     
     # Score states
     score_experience = State()
@@ -70,6 +71,9 @@ class AdminStates(StatesGroup):
     # System states
     change_min_score = State()
     create_admin = State()
+    advanced_filter_input = State()
+    broadcast_status = State()
+    broadcast_text = State()
 
 class AdminManagementStates(StatesGroup):
     menu = State()

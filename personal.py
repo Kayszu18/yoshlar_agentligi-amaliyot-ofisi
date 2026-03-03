@@ -13,7 +13,8 @@ from states import PersonalStates
 from keyboards import (
     regions_keyboard, districts_keyboard, cancel_keyboard, main_menu_keyboard, back_keyboard
 )
-from services import ValidationService
+from services import ValidationService, UIService
+from finish import show_confirmation
 
 router = Router()
 
@@ -102,6 +103,7 @@ async def start_application(message: Message, session: AsyncSession, state: FSMC
         return
     
     await state.set_state(PersonalStates.full_name)
+    await message.answer(UIService.progress(1, 4, "Shaxsiy ma'lumotlar"), parse_mode="HTML")
     await message.answer(
         "✍️ <b>1-BOSQICH: SHAXSIY MA'LUMOTLAR</b>\n\n"
         "🚀 <b>Keling, tanishib olamiz!</b>\n\n"
@@ -232,15 +234,20 @@ async def process_work_start_date(message: Message, state: FSMContext, session: 
         await message.answer("❌ Sana formati noto'g'ri. Misol: 01.03.2022")
         return
     
-    experience = ValidationService.calculate_experience(message.text.strip())
-    await state.update_data(work_start_date=message.text.strip(), experience_years=experience)
+    work_date_str = message.text.strip()
+    experience = ValidationService.calculate_experience(work_date_str)
+    await state.update_data(work_start_date=work_date_str, experience_years=experience)
     
     data = await state.get_data()
     
-    await message.answer(
-        f"✅ <b>Ajoyib! Sizda {experience} yillik tajriba bor.</b> 😎\n\n"
-    )
-    
-    # Move to professional stage
-    from professional import start_professional
-    await start_professional(message, state)
+    # Check if we are in editing mode
+    if data.get("is_editing"):
+        await state.update_data(is_editing=False)  # Unset the flag
+        await show_confirmation(message, state)
+    else:
+        await message.answer(
+            f"✅ <b>Ajoyib! Sizda {experience} yillik tajriba bor.</b> 😎\n\n"
+        )
+        # Move to professional stage
+        from professional import start_professional
+        await start_professional(message, state)

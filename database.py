@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, BigInteger
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, BigInteger, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, relationship
@@ -27,12 +27,22 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+        def _ensure_system_settings_columns(sync_conn):
+            columns = {col["name"] for col in inspect(sync_conn).get_columns("system_settings")}
+            if "subscription_required" not in columns:
+                sync_conn.execute(
+                    text("ALTER TABLE system_settings ADD COLUMN subscription_required BOOLEAN DEFAULT 1")
+                )
+
+        await conn.run_sync(_ensure_system_settings_columns)
+
 
 class SystemSettings(Base):
     __tablename__ = "system_settings"
     id = Column(Integer, primary_key=True)
     system_status = Column(String, default="active")  # active / maintenance
     min_passing_score = Column(Integer, default=20)
+    subscription_required = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -149,4 +159,22 @@ class AdminActionLog(Base):
     action = Column(String)
     target_id = Column(Integer)
     details = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserDraft(Base):
+    __tablename__ = "user_drafts"
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False)
+    state_name = Column(String, nullable=False)
+    state_data = Column(Text, nullable=False, default="{}")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ReminderLog(Base):
+    __tablename__ = "reminder_logs"
+    id = Column(Integer, primary_key=True)
+    reminder_key = Column(String, unique=True, nullable=False)
+    telegram_id = Column(BigInteger, nullable=False)
+    reminder_type = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)

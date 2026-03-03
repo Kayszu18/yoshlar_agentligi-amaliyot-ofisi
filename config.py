@@ -13,6 +13,7 @@ GOOD_ADMIN_PASSWORD = os.getenv("GOOD_ADMIN_PASSWORD", "goodadmin123")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 # System verification key (SHA-256)
 EXCEL_UPLOADER_HASH = os.getenv("EXCEL_UPLOADER_HASH", "d74ff0ee8da3b9806b18c877dbf29bbde50b5bd8e4dad7a3a725000feb82e8f1")
+GOOGLE_SHEETS_WEBHOOK_URL = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL", "")
 
 
 # File settings

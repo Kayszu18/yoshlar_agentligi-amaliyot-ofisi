@@ -8,12 +8,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from states import EssayStates
 from database import Application, Document, User
+from services import UIService
 
 router = Router()
 
 
 async def start_essay(message: Message, state: FSMContext):
     await state.set_state(EssayStates.upload)
+    await message.answer(UIService.progress(3, 4, "Esse bosqichi"), parse_mode="HTML")
     await message.answer(
         "📝 <b>2-BOSQICH: ESSE YOZISH</b>\n\n"
         "Mavzu: <b>\"Nega aynan meni Amaliyot ofisi loyihasiga qabul qilinishim kerak?\"</b> 🤔\n\n"

@@ -7,9 +7,10 @@ from datetime import datetime
 import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from database import User, Application, Document
-from states import ConfirmStates
-from keyboards import confirm_keyboard, main_menu_keyboard
+from database import User, Application, Document, Admin
+from states import ConfirmStates, PersonalStates, ProfessionalStates
+from keyboards import confirm_keyboard, main_menu_keyboard, edit_application_keyboard
+from services import UIService, DraftService
 
 router = Router()
 
@@ -17,6 +18,7 @@ router = Router()
 async def show_confirmation(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.set_state(ConfirmStates.confirm)
+    await message.answer(UIService.progress(4, 4, "Yakuniy tasdiqlash"), parse_mode="HTML")
     
     certs = data.get("lang_certs", "Yo'q")
     cert_docs = data.get("cert_docs", {})
@@ -129,7 +131,36 @@ async def confirm_application(callback: CallbackQuery, state: FSMContext, sessio
     
     await session.commit()
     await state.clear()
+    await DraftService.clear_draft(session, callback.from_user.id)
     
+    # --- NEW ADMIN NOTIFICATION LOGIC ---
+    if bot: # Ensure bot object is available
+        try:
+            admin_notification_text = (
+                "🔔 <b>Yangi ariza kelib tushdi!</b>\n\n"
+                f"🆔 Ariza ID: <code>#{app.id}</code>\n"
+                f"👤 F.I.Sh: <b>{user.full_name}</b>\n"
+                f"📞 Telefon: <code>{user.phone_number}</code>\n"
+                f"📍 Manzil: {app.region}, {app.district}\n"
+                f"⏰ Topshirilgan vaqt: {app.submitted_at.strftime('%d.%m.%Y %H:%M')}\n\n"
+                "Ko'rib chiqish uchun admin panelga kiring: /admin"
+            )
+            
+            # Fetch all active admins
+            admins_result = await session.execute(select(Admin).where(Admin.is_active == True))
+            active_admins = admins_result.scalars().all()
+
+            for admin in active_admins:
+                try:
+                    await bot.send_message(admin.telegram_id, admin_notification_text, parse_mode="HTML")
+                except Exception as e:
+                    import logging
+                    logging.error(f"Failed to send new application notification to admin {admin.telegram_id}: {e}")
+        except Exception as e:
+            import logging
+            logging.error(f"Error during admin notification for new application {app.id}: {e}")
+    # --- END NEW ADMIN NOTIFICATION LOGIC ---
+
     await callback.message.edit_text(
         "🎉 <b>TABRIKLAYMIZ! ARIZANGIZ MUVAFFAQIYATLI QABUL QILINDI!</b> 🥳\n\n"
         f"📋 Ariza raqami: <code>#{app.id}</code>\n\n"
@@ -142,8 +173,36 @@ async def confirm_application(callback: CallbackQuery, state: FSMContext, sessio
 
 @router.callback_query(F.data == "confirm:edit", ConfirmStates.confirm)
 async def edit_application(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(None)
+    await state.set_state(ConfirmStates.edit_choice)
     await callback.message.edit_text(
-        "🔄 Qaysi bo'limni tahrirlash istaysiz?\n\n"
-        "Qayta boshlash uchun /start buyrug'ini yuboring."
+        "🔄 Qaysi bo'limni tahrirlashni xohlaysiz?",
+        reply_markup=edit_application_keyboard()
     )
+
+
+@router.callback_query(F.data == "edit:back_to_confirm", ConfirmStates.edit_choice)
+async def back_to_confirmation(callback: CallbackQuery, state: FSMContext):
+    """Returns user to the confirmation summary screen."""
+    await callback.message.delete()
+    await show_confirmation(callback.message, state)
+
+
+@router.callback_query(F.data == "edit:personal", ConfirmStates.edit_choice)
+async def edit_personal_info(callback: CallbackQuery, state: FSMContext):
+    """Starts the personal info editing flow."""
+    await state.update_data(is_editing=True)
+    await state.set_state(PersonalStates.full_name)
+    await callback.message.edit_text(
+        "🔄 <b>Shaxsiy ma'lumotlarni tahrirlash</b>\n\n"
+        "1️⃣ Iltimos, <b>to'liq ism-familiyangizni</b> qaytadan kiriting:",
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "edit:professional", ConfirmStates.edit_choice)
+async def edit_professional_info(callback: CallbackQuery, state: FSMContext):
+    """Starts the professional info editing flow."""
+    await state.update_data(is_editing=True)
+    from professional import start_professional
+    await callback.message.delete()
+    await start_professional(callback.message, state)
